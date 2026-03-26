@@ -18,23 +18,22 @@ if command -v nvc &>/dev/null && nvc --version &>/dev/null; then
     exit 0
 fi
 
-CONDA_PREFIX_PATH="${CONDA_PREFIX:-$(conda info --base)/envs/ms}"
+# Ensure Conda is in PATH and explicitly lock the path to the 'ms' environment
+if ! command -v conda >/dev/null 2>&1; then
+    export PATH="$HOME/miniconda3/bin:$PATH"
+fi
+CONDA_BASE_PATH="$(conda info --base 2>/dev/null || echo "$HOME/miniconda3")"
+CONDA_PREFIX_PATH="$CONDA_BASE_PATH/envs/ms"
 
 mkdir -p "$TMP_DIR" "$PREFIX"
 
 echo "[INFO] Downloading NVC ${NVC_VERSION} source..."
-curl -fsSL -o "$TMP_DIR/nvc.tar.gz" "$NVC_TAR_URL" || {
-    echo "[ERROR] Failed to download NVC source."
-    rm -rf "$TMP_DIR"; exit 2
-}
+curl -fsSL -o "$TMP_DIR/nvc.tar.gz" "$NVC_TAR_URL"
 
-tar -xzf "$TMP_DIR/nvc.tar.gz" -C "$TMP_DIR" || {
-    echo "[ERROR] Failed to extract NVC source."
-    rm -rf "$TMP_DIR"; exit 3
-}
+tar -xzf "$TMP_DIR/nvc.tar.gz" -C "$TMP_DIR"
 
 SRC_DIR="$TMP_DIR/nvc-${NVC_VERSION}"
-cd "$SRC_DIR"
+BUILD_DIR="$SRC_DIR/build"
 
 echo "[INFO] Configuring NVC..."
 LLVM_CONFIG=$(find "$CONDA_PREFIX_PATH/bin" -name "llvm-config*" | head -1)
@@ -46,7 +45,11 @@ export PKG_CONFIG_PATH="$CONDA_PREFIX_PATH/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 export CFLAGS="-I$CONDA_PREFIX_PATH/include"
 export LDFLAGS="-L$CONDA_PREFIX_PATH/lib -Wl,-rpath,$CONDA_PREFIX_PATH/lib"
 
-./configure \
+# Enforce out-of-source build
+mkdir -p "$BUILD_DIR"
+cd "$BUILD_DIR"
+
+../configure \
     --prefix="$PREFIX" \
     --with-llvm="$LLVM_CONFIG" \
     --disable-verilog \
@@ -55,14 +58,13 @@ export LDFLAGS="-L$CONDA_PREFIX_PATH/lib -Wl,-rpath,$CONDA_PREFIX_PATH/lib"
 echo "[INFO] Building NVC (this takes ~2 minutes)..."
 make -j"$(nproc)" 2>&1 | tail -5
 
-echo "[INFO] Installing NVC to $PREFIX..."
 make install
 
 cd /
 rm -rf "$TMP_DIR"
 
 nvc --version &>/dev/null || { echo "[ERROR] NVC installed but not functional."; exit 5; }
-echo "[INFO] NVC OK: $(nvc --version | head -1)"
+echo "[INFO] NVC ready: $(nvc --version | head -1)"
 
 append_to_rc "export PATH=\"$PREFIX/bin:\$PATH\""
 
