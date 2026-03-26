@@ -19,15 +19,10 @@ except Exception:
 def find_top_entity(file_list: list[str]) -> str | None:
     """
     Builds a dependency graph by finding all defined entities and all instantiated
-    entities across the files
-    
-    Returns the top entity (a root node in the hierarchy that is never instantiated)
+    entities across the files. Returns the top entity (a root node in the hierarchy
+    that is never instantiated).
     """
-    # Regex to find entity definitions
     re_entity = re.compile(r'^\s*entity\s+(\w+)', re.IGNORECASE | re.MULTILINE)
-    
-    # Regex to find component/entity instantiations
-    # Matches: label : [entity work.]name [generic map | port map]
     re_inst = re.compile(r':\s*(?:entity\s+(?:\w+\.)?)?(\w+)\s+(?:generic\s+map|port\s+map)', re.IGNORECASE)
 
     defined_entities = {}
@@ -36,35 +31,98 @@ def find_top_entity(file_list: list[str]) -> str | None:
     for f in file_list:
         try:
             txt = Path(f).read_text(encoding='utf-8', errors='ignore')
-            # Strip comments to avoid false positives
             txt = re.sub(r'--.*', '', txt)
-            
-            # Register defined entities
+
             for match in re_entity.findall(txt):
                 defined_entities[match.lower()] = match
-                
-            # Register instantiated components/entities
+
             for match in re_inst.findall(txt):
                 instantiated_entities.add(match.lower())
         except Exception:
             continue
 
-    # The top candidates are entities that are defined but never instantiated
     top_candidates = []
     for lower_name, original_name in defined_entities.items():
         if lower_name not in instantiated_entities:
             top_candidates.append(original_name)
 
-    # Fallback if the graph is somehow empty or circular
     if not top_candidates:
         if defined_entities:
             return list(defined_entities.values())[0]
         return None
 
-    # Sort alphabetically to guarantee a deterministic selection if multiple 
-    # uninstantiated entities exist in the same test directory
     top_candidates.sort()
     return top_candidates[0]
+
+
+def sort_files_by_dependency(file_list: list[str]) -> list[str]:
+    """
+    Sorts VHDL files topologically based on their dependencies.
+    Packages and entities are placed before the files that use or implement them.
+    """
+    # Regex for what a file provides
+    re_provides_entity = re.compile(r'^\s*entity\s+(\w+)', re.IGNORECASE | re.MULTILINE)
+    re_provides_package = re.compile(r'^\s*package\s+(?!body\b)(\w+)', re.IGNORECASE | re.MULTILINE)
+
+    # Regex for what a file requires
+    re_requires_pkg_body = re.compile(r'^\s*package\s+body\s+(\w+)', re.IGNORECASE | re.MULTILINE)
+    re_requires_inst = re.compile(r':\s*(?:entity\s+(?:\w+\.)?)?(\w+)\s+(?:generic|port)\s+map', re.IGNORECASE)
+    re_requires_use = re.compile(r'^\s*use\s+(?:\w+\.)?(\w+)', re.IGNORECASE | re.MULTILINE)
+    re_requires_arch = re.compile(r'^\s*architecture\s+\w+\s+of\s+(\w+)', re.IGNORECASE | re.MULTILINE)
+
+    provides = {}
+    requires = {}
+
+    for f in file_list:
+        try:
+            txt = Path(f).read_text(encoding='utf-8', errors='ignore')
+            txt = re.sub(r'--.*', '', txt)
+
+            prov = set(m.lower() for m in re_provides_entity.findall(txt))
+            prov.update(m.lower() for m in re_provides_package.findall(txt))
+
+            req = set(m.lower() for m in re_requires_pkg_body.findall(txt))
+            req.update(m.lower() for m in re_requires_inst.findall(txt))
+            req.update(m.lower() for m in re_requires_use.findall(txt))
+            req.update(m.lower() for m in re_requires_arch.findall(txt))
+            req = req - prov # Remove self-dependencies
+
+            provides[f] = prov
+            requires[f] = req
+        except Exception:
+            provides[f] = set()
+            requires[f] = set()
+
+    # Build dependency graph: dependencies[file] = {files it depends on}
+    dependencies = {f: set() for f in file_list}
+    for f, reqs in requires.items():
+        for f_dep, provs in provides.items():
+            if f != f_dep and reqs.intersection(provs):
+                dependencies[f].add(f_dep)
+
+    # Topological sort using Depth-First Search
+    sorted_files = []
+    visited = set()
+    temp_mark = set()
+
+    def visit(n):
+        if n in temp_mark:
+            return # Ignore circular dependencies silently
+        if n not in visited:
+            temp_mark.add(n)
+            # Sort dependencies alphabetically for deterministic resolution of ties
+            for dep in sorted(dependencies.get(n, set())):
+                visit(dep)
+            temp_mark.remove(n)
+            visited.add(n)
+            sorted_files.append(n)
+
+    # Start with an alphabetical sort to guarantee determinism
+    for f in sorted(file_list):
+        if f not in visited:
+            visit(f)
+
+    return sorted_files
 
 
 def run_nvc_analyze(files: list[str]):
@@ -95,7 +153,6 @@ def process_sim(sim_path: Path, progress_callback=None):
     if not sim_path.exists() or not sim_path.is_dir():
         return {"error": f"sim dir not found: {sim_path}"}, 2
 
-    # find VHDL files in order using generate_core resolver if available
     if generate_core is not None:
         try:
             files = generate_core.find_hdl_files(sim_path)
@@ -106,32 +163,33 @@ def process_sim(sim_path: Path, progress_callback=None):
 
     files = [str(Path(f).resolve()) for f in files]
 
-    # Create hierarchical-sorted file list (relative to sim_path) and present only basenames
-    rel_paths = [Path(f).relative_to(sim_path) for f in files]
-    rel_sorted = sorted(rel_paths, key=lambda p: p.parts)
-    basenames = []
-    for p in rel_sorted:
-        name = p.name
-        if name not in basenames:
-            basenames.append(name)
-
-    result = {"sim_dir": str(sim_path), "files": basenames, "top": None, "compile": {}}
-
     if not files:
+        result = {"sim_dir": str(sim_path), "files": [], "top": None, "compile": {}}
         result["compile"]["ok"] = False
         result["compile"]["error"] = "no .vhd files found"
         if progress_callback:
             progress_callback(100, "no .vhd files found")
         return result, 0
 
-    # Retrieve the top entity mathematically instead of using a heuristic
+    # Retrieve the top entity mathematically
     top = find_top_entity(files)
-    result["top"] = top
+
+    # Sort files according to true VHDL dependencies
+    files = sort_files_by_dependency(files)
+
+    # Extract basenames while maintaining the newly sorted dependency order
+    rel_paths = [Path(f).relative_to(sim_path) for f in files]
+    basenames = []
+    for p in rel_paths:
+        name = p.name
+        if name not in basenames:
+            basenames.append(name)
+
+    result = {"sim_dir": str(sim_path), "files": basenames, "top": top, "compile": {}}
 
     # Analyze files with progress callback
     logs = []
     total = len(files)
-    # Use filenames relative to sim_path for nvc invocation
     local_files = [str(Path(f).relative_to(sim_path)) for f in files]
 
     env = os.environ.copy()
@@ -140,7 +198,7 @@ def process_sim(sim_path: Path, progress_callback=None):
         if progress_callback:
             pct = int((i - 1) / total * 100)
             progress_callback(pct, f"Analyzing {Path(local_f).name} ({i}/{total})")
-        
+
         cmd = ["nvc", "-a", local_f]
         try:
             r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(sim_path), env=env)
@@ -151,7 +209,7 @@ def process_sim(sim_path: Path, progress_callback=None):
             if progress_callback:
                 progress_callback(100, "nvc not found in PATH")
             return result, 1
-        
+
         logs.append(f"$ {' '.join(cmd)}\n{r.stdout}")
         if r.returncode != 0:
             result["compile"]["ok"] = False
