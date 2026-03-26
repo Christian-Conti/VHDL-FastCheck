@@ -1,3 +1,0 @@
-[submodule "external/ghdl"]
-	path = external/ghdl
-	url = https://github.com/ghdl/ghdl.git

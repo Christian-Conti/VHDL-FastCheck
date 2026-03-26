@@ -1,62 +1,22 @@
-# -----------------------------
-# General
-# -----------------------------
-# Byte-compiled / optimized / DLL files
+
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
-
-# Distribution / packaging
 build/
 dist/
 *.egg-info/
 pip-wheel-metadata/
-
-# Virtual environments
 .venv/
 venv/
 env/
-
-# conda
 conda-meta/
-
-# -----------------------------
-# Project artifacts
-# -----------------------------
-test_results.json
 *.log
-
-# Editor directories and files
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# macOS
 .DS_Store
-
-# -----------------------------
-# GHDL / external
-# -----------------------------
-# Do NOT ignore the submodule root `external/ghdl` itself (keep submodule tracked),
-# but ignore build artifacts and local installs inside it.
-external/ghdl/build/
-external/ghdl/_build/
-external/ghdl/dist/
-external/ghdl/*.egg-info/
-external/ghdl/.cache/
-external/ghdl/.venv/
-external/ghdl/*.log
-
-# local installs
-/.local/
-
-# -----------------------------
-# OS / misc
-# -----------------------------
 Thumbs.db
 ehthumbs.db
 npm-debug.log*

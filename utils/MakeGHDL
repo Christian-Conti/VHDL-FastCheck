@@ -1,56 +1,66 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Install pre-built GHDL to $PREFIX (default: $HOME/.local)
-# Using the mcode backend avoids the libgnat runtime dependency entirely.
+NIX_PROFILE="$HOME/.nix-profile/etc/profile.d/nix.sh"
 
-PREFIX=${PREFIX:-$HOME/.local}
-GHDL_RELEASE_URL="https://github.com/ghdl/ghdl/releases/download/v6.0.0/ghdl-llvm-6.0.0-ubuntu24.04-x86_64.tar.gz"
-TMP_DIR="/tmp/ghdl_install_$$"
+nix_ghdl_path() {
+    # Returns the ghdl binary path if Nix-installed GHDL is present
+    if [ -f "$NIX_PROFILE" ]; then
+        # shellcheck disable=SC1090
+        source "$NIX_PROFILE"
+    fi
+    command -v ghdl 2>/dev/null || true
+}
 
-# 1. Check if GHDL is already installed
-if [ -x "$PREFIX/bin/ghdl" ]; then
-  echo "[INFO] GHDL is already installed at $PREFIX/bin/ghdl. Skipping installation."
-  exit 0
+GHDL_BIN="$(nix_ghdl_path)"
+if [ -n "$GHDL_BIN" ] && "$GHDL_BIN" --version &>/dev/null; then
+    echo "[INFO] GHDL is already installed at $GHDL_BIN. Skipping."
+    exit 0
 fi
 
-echo "[INFO] Downloading standalone llvm GHDL from $GHDL_RELEASE_URL"
-mkdir -p "$TMP_DIR"
+if ! command -v nix-env &>/dev/null; then
+    echo "[INFO] Nix not found. Installing Nix (no-daemon, no root required)..."
+    curl -fsSL https://nixos.org/nix/install | sh -s -- --no-daemon || {
+        echo "[ERROR] Nix installation failed."
+        exit 1
+    }
+    echo "[INFO] Nix installed."
+fi
 
-# The -f flag forces curl to fail silently on server errors (like 404)
-curl -f -L -o "$TMP_DIR/ghdl.tar.gz" "$GHDL_RELEASE_URL" || {
-  echo "[ERROR] Failed to download GHDL binary. The URL might be invalid or there is a network issue."
-  rm -rf "$TMP_DIR"
-  exit 2
-}
-
-echo "[INFO] Extracting GHDL to $PREFIX"
-mkdir -p "$PREFIX"
-tar -xzf "$TMP_DIR/ghdl.tar.gz" -C "$PREFIX" --strip-components=1 || {
-  echo "[ERROR] Failed to extract GHDL. The downloaded archive might be corrupted."
-  rm -rf "$TMP_DIR"
-  exit 3
-}
-
-rm -rf "$TMP_DIR"
-echo "[INFO] GHDL successfully installed to $PREFIX"
-
-# 2. Add GHDL to PATH if not already present
-if [[ ":$PATH:" != *":$PREFIX/bin:"* ]]; then
-  echo "[INFO] $PREFIX/bin is not in your PATH."
-  
-  # Determine the correct shell configuration file
-  SHELL_RC="$HOME/.bashrc"
-  if [ -n "${ZSH_VERSION:-}" ] || [[ "$SHELL" == *"zsh"* ]]; then
-    SHELL_RC="$HOME/.zshrc"
-  fi
-
-  echo "[INFO] Appending export PATH to $SHELL_RC"
-  echo -e "\n# Added by GHDL setup script\nexport PATH=\"$PREFIX/bin:\$PATH\"" >> "$SHELL_RC"
-  
-  echo "[WARN] You MUST run 'source $SHELL_RC' or restart your terminal to use GHDL!"
+# Source Nix into the current shell session
+if [ -f "$NIX_PROFILE" ]; then
+    # shellcheck disable=SC1090
+    source "$NIX_PROFILE"
 else
-  echo "[INFO] $PREFIX/bin is already in your PATH."
+    echo "[ERROR] Nix profile not found at $NIX_PROFILE after installation."
+    exit 1
+fi
+
+echo "[INFO] Installing GHDL via Nix (this may take a few minutes on first run)..."
+nix-env -iA nixpkgs.ghdl || {
+    echo "[ERROR] Failed to install GHDL via Nix."
+    exit 1
+}
+
+GHDL_BIN="$(nix_ghdl_path)"
+if [ -z "$GHDL_BIN" ] || ! "$GHDL_BIN" --version &>/dev/null; then
+    echo "[ERROR] GHDL installed but not functional. Check Nix setup."
+    exit 1
+fi
+
+echo "[INFO] GHDL successfully installed: $("$GHDL_BIN" --version | head -1)"
+SHELL_RC="$HOME/.bashrc"
+if [ -n "${ZSH_VERSION:-}" ] || [[ "$SHELL" == *"zsh"* ]]; then
+    SHELL_RC="$HOME/.zshrc"
+fi
+
+NIX_SOURCE_LINE=". \"$NIX_PROFILE\""
+if ! grep -qF "$NIX_SOURCE_LINE" "$SHELL_RC" 2>/dev/null; then
+    echo "[INFO] Adding Nix to $SHELL_RC"
+    printf '\n# Added by GHDL setup script (Nix)\n%s\n' "$NIX_SOURCE_LINE" >> "$SHELL_RC"
+    echo "[WARN] Run 'source $SHELL_RC' or restart your terminal for GHDL to be available in new sessions."
+else
+    echo "[INFO] Nix already sourced in $SHELL_RC."
 fi
 
 exit 0
