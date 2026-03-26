@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Print only final success message; on error print a single error line.
 on_exit() {
   local rc=$?
   if [ $rc -ne 0 ]; then
@@ -35,7 +34,6 @@ download_file() {
 }
 
 glibc_version() {
-  # Returns glibc version as a comparable integer: major*1000+minor (e.g. 2.17 → 2017)
   local ver
   ver="$(ldd --version 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+$')"
   local major minor
@@ -55,8 +53,6 @@ ensure_conda() {
     local arch
     arch="$(uname -m)"
 
-    # Latest Miniconda requires GLIBC >= 2.28.
-    # For older systems (e.g. CentOS 7 with GLIBC 2.17) use the last compatible release.
     local glibc_ver
     glibc_ver="$(glibc_version)"
     local suffix
@@ -116,9 +112,9 @@ init_conda_shell() {
 
   case "${user_shell}" in
     bash) rc_file="${HOME}/.bashrc" ;;
-    zsh) rc_file="${HOME}/.zshrc" ;;
+    zsh)  rc_file="${HOME}/.zshrc" ;;
     fish) rc_file="${HOME}/.config/fish/config.fish" ;;
-    *) rc_file="${HOME}/.${user_shell}rc" ;;
+    *)    rc_file="${HOME}/.${user_shell}rc" ;;
   esac
 
   if conda init "${user_shell}" >/dev/null 2>&1; then
@@ -128,10 +124,10 @@ init_conda_shell() {
       if ( source "${rc_file}" >/dev/null 2>&1 ); then
         info "Sourced ${rc_file} into current shell."
       else
-        warn "Failed to source ${rc_file} into current shell. You may need to run: source ${rc_file}"
+        warn "Failed to source ${rc_file}. You may need to run: source ${rc_file}"
       fi
     else
-      warn "${rc_file} not found; conda init may have modified it. You can run: conda init ${user_shell} && source ${rc_file}"
+      warn "${rc_file} not found. You can run: conda init ${user_shell} && source ${rc_file}"
     fi
   else
     warn "Could not run 'conda init ${user_shell}'. You may need to add conda to your shell manually."
@@ -139,7 +135,6 @@ init_conda_shell() {
 }
 
 install_requirements_in_env() {
-  # Prefer 'conda run' which does not require activating a shell
   if command -v conda >/dev/null 2>&1 && conda run -n "${ENV_NAME}" true >/dev/null 2>&1; then
     info "Installing requirements into '${ENV_NAME}' using 'conda run'..."
     conda run -n "${ENV_NAME}" python -m pip install --upgrade pip
@@ -147,7 +142,6 @@ install_requirements_in_env() {
     return $?
   fi
 
-  # Fallback: try to activate the env in this shell and install
   if conda activate "${ENV_NAME}" >/dev/null 2>&1; then
     info "Installing requirements into '${ENV_NAME}' via activation..."
     python -m pip install --upgrade pip
@@ -184,11 +178,21 @@ ensure_env() {
   fi
 }
 
+install_nvc_build_deps() {
+  local deps="gcc gxx make llvmdev flex pkg-config libffi zlib zstd"
+  echo "[INFO] Installing NVC build dependencies into '${ENV_NAME}'..."
+  conda install -y -n "${ENV_NAME}" --override-channels -c conda-forge $deps || {
+    warn "Failed to install one or more NVC build dependencies."
+    return 1
+  }
+}
+
 main() {
   ensure_conda
   init_conda_shell
   accept_conda_tos_if_supported
   ensure_env
+  install_nvc_build_deps
 
   echo "[INFO] installation complete succesfull"
   echo "[INFO] Environment '${ENV_NAME}' is ready..."
