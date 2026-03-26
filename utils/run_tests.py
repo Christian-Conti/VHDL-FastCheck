@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 import argparse
 import json
 import subprocess
@@ -20,12 +19,11 @@ def find_sim_dirs(target: Path):
 
 
 def run_runner(sim_dir: Path, runner_script: Path, progress_cb=None):
-    # Import ghdl_runner as a module from file so we can call process_sim directly and get progress
+    # Import nvc_runner as a module from file so we can call process_sim directly and get progress
     import importlib.util
-    spec = importlib.util.spec_from_file_location("ghdl_runner", str(runner_script))
+    spec = importlib.util.spec_from_file_location("nvc_runner", str(runner_script))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    # mod.process_sim(sim_dir, progress_callback)
     data, rc = mod.process_sim(sim_dir, progress_callback=progress_cb)
     return data, rc
 
@@ -40,7 +38,7 @@ def main():
         print(f"[ERROR] target not found: {target}")
         sys.exit(2)
 
-    runner_script = Path(__file__).parent / 'ghdl_runner.py'
+    runner_script = Path(__file__).parent / 'nvc_runner.py'
     sims = find_sim_dirs(target)
 
     results = {"dir": _display_path(str(target)), "sims": {}}
@@ -63,7 +61,7 @@ def main():
         data, rc = run_runner(s, runner_script, progress_cb)
         print()  # newline after progress bar
 
-        # Normalize returned data: drop elaborate if present (ghdl_runner already sets top/files/compile)
+        # Normalize returned data: drop elaborate if present (nvc_runner already sets top/files/compile)
         try:
             if isinstance(data, dict):
                 data.pop("elaborate", None)
