@@ -11,12 +11,10 @@ MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 ## @section Config
 
 ## @config Target DUT directory
-## @param TARGET Path to the DUT directory
-TARGET ?= src/cap1/dut
+## @param TARGET Path to the exercise directory
+TARGET ?= 
 
-## @config Testbench name
-## @param TB Testbench name (e.g., capX-name)
-TB ?= cap1-name
+## Removed TB argument; tests discover simulation folders automatically
 
 # Script path for conda environment setup
 CONDA_ENV_SCRIPT ?= $(MAKEFILE_DIR)/utils/MakeConda
@@ -26,7 +24,7 @@ FUSESOC           := fusesoc
 FUSESOC_CORE_FILE := fusesoc.core
 
 # ── Targets ─────────────────────────────────────────────────────────────────────
-.PHONY: help conda-env core sim clean
+.PHONY: help env test clean
 
 ## @section Help
 ## Show this guide
@@ -40,28 +38,17 @@ help:
 	FILE_FOR_HELP="$(firstword $(MAKEFILE_LIST))" bash "$$HELP_SCRIPT"
 
 ## @section Environment
-## Download miniconda (if needed) and create the 'amaretto' conda environment with FuseSoC
-conda-env:
-	@bash "$(CONDA_ENV_SCRIPT)";
+## Download miniconda (if needed) and create the conda environment with FuseSoC
+## After the environment is created, install pre-built GHDL
+env:
+	@bash "$(CONDA_ENV_SCRIPT)"
+	@echo "[INFO] Installing pre-built GHDL (utils/MakeGHDL)..."
+	@bash "$(MAKEFILE_DIR)/utils/MakeGHDL"
 
-## @section Core & Simulation
-
-## Generate the fusesoc core file from the target directory and testbench
-## @param TARGET Path to the DUT directory
-## @param TB Testbench name (e.g., capX-name)
-core:
-	@python3 "$(MAKEFILE_DIR)/utils/generate_core.py" "$(TARGET)" "$(TB)" -o "$(FUSESOC_CORE_FILE)"
-
-## Execute the simulation flow: builds the core first, then runs fusesoc sim target
-## @param TARGET Path to the DUT directory
-## @param TB Testbench name (e.g., capX-name)
-sim: core
-	@CORE_VLNV=$$(grep -m 1 '^name *:' $(FUSESOC_CORE_FILE) | awk '{print $$2}'); \
-	if [ -z "$$CORE_VLNV" ]; then \
-		echo "[ERROR] Could not find 'name:' field inside $(FUSESOC_CORE_FILE)."; \
-		exit 1; \
-	fi; \
-	$(FUSESOC) --cores-root=. run --target=sim $$CORE_VLNV
+## Execute the test flow: scan TARGET for "sim" dirs and run Python runner
+## @param TARGET Path to the exercise directory
+test:
+	@python3 "$(MAKEFILE_DIR)/utils/run_tests.py" "$(TARGET)"
 
 ## @section Clean
 ## Remove all build artifacts

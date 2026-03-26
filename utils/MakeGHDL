@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Install pre-built GHDL to $PREFIX (default: $HOME/.local)
+# Using the mcode backend avoids the libgnat runtime dependency entirely.
+
+PREFIX=${PREFIX:-$HOME/.local}
+GHDL_RELEASE_URL="https://github.com/ghdl/ghdl/releases/download/v6.0.0/ghdl-llvm-6.0.0-ubuntu24.04-x86_64.tar.gz"
+TMP_DIR="/tmp/ghdl_install_$$"
+
+# 1. Check if GHDL is already installed
+if [ -x "$PREFIX/bin/ghdl" ]; then
+  echo "[INFO] GHDL is already installed at $PREFIX/bin/ghdl. Skipping installation."
+  exit 0
+fi
+
+echo "[INFO] Downloading standalone llvm GHDL from $GHDL_RELEASE_URL"
+mkdir -p "$TMP_DIR"
+
+# The -f flag forces curl to fail silently on server errors (like 404)
+curl -f -L -o "$TMP_DIR/ghdl.tar.gz" "$GHDL_RELEASE_URL" || {
+  echo "[ERROR] Failed to download GHDL binary. The URL might be invalid or there is a network issue."
+  rm -rf "$TMP_DIR"
+  exit 2
+}
+
+echo "[INFO] Extracting GHDL to $PREFIX"
+mkdir -p "$PREFIX"
+tar -xzf "$TMP_DIR/ghdl.tar.gz" -C "$PREFIX" --strip-components=1 || {
+  echo "[ERROR] Failed to extract GHDL. The downloaded archive might be corrupted."
+  rm -rf "$TMP_DIR"
+  exit 3
+}
+
+rm -rf "$TMP_DIR"
+echo "[INFO] GHDL successfully installed to $PREFIX"
+
+# 2. Add GHDL to PATH if not already present
+if [[ ":$PATH:" != *":$PREFIX/bin:"* ]]; then
+  echo "[INFO] $PREFIX/bin is not in your PATH."
+  
+  # Determine the correct shell configuration file
+  SHELL_RC="$HOME/.bashrc"
+  if [ -n "${ZSH_VERSION:-}" ] || [[ "$SHELL" == *"zsh"* ]]; then
+    SHELL_RC="$HOME/.zshrc"
+  fi
+
+  echo "[INFO] Appending export PATH to $SHELL_RC"
+  echo -e "\n# Added by GHDL setup script\nexport PATH=\"$PREFIX/bin:\$PATH\"" >> "$SHELL_RC"
+  
+  echo "[WARN] You MUST run 'source $SHELL_RC' or restart your terminal to use GHDL!"
+else
+  echo "[INFO] $PREFIX/bin is already in your PATH."
+fi
+
+exit 0
