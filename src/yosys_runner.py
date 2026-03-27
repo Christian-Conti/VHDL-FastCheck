@@ -1,64 +1,145 @@
 #!/usr/bin/env python3
+import argparse
+import json
 import os
-import sys
+import re
 import subprocess
-from mako.template import Template
+import sys
+from pathlib import Path
 
-def run_yosys_flow(entity_name, vhd_files, core_name="design_core"):
-    print("[yosys_runner] Starting Yosys synthesis preparation...")
+def find_top_entity(file_list: list[str]) -> str | None:
+    re_entity = re.compile(r'^\s*entity\s+(\w+)', re.IGNORECASE | re.MULTILINE)
+    re_inst = re.compile(r':\s*(?:entity\s+(?:\w+\.)?)?(\w+)\s+(?:generic\s+map|port\s+map)', re.IGNORECASE)
+    defined_entities = {}
+    instantiated_entities = set()
+    
+    for f in file_list:
+        try:
+            txt = Path(f).read_text(encoding='utf-8', errors='ignore')
+            txt = re.sub(r'--.*', '', txt)
+            for match in re_entity.findall(txt):
+                defined_entities[match.lower()] = match
+            for match in re_inst.findall(txt):
+                instantiated_entities.add(match.lower())
+        except Exception: 
+            continue
+            
+    top_candidates = [orig for low, orig in defined_entities.items() if low not in instantiated_entities]
+    if not top_candidates: 
+        return list(defined_entities.values())[0] if defined_entities else None
+    
+    top_candidates.sort()
+    return top_candidates[0]
 
-    dut_files = []
-    for f in vhd_files:
-        dut_files.append((f, "vhdlSource-2008"))
+def sort_files_by_dependency(file_list: list[str]) -> list[str]:
+    re_provides = re.compile(r'^\s*(?:entity|package)\s+(?!body\b)(\w+)', re.IGNORECASE | re.MULTILINE)
+    re_requires = re.compile(r'(?:package\s+body\s+|:\s*(?:entity\s+(?:\w+\.)?)?|use\s+(?:\w+\.)?|architecture\s+\w+\s+of\s+)(\w+)', re.IGNORECASE | re.MULTILINE)
+    provides, requires = {}, {}
+    
+    for f in file_list:
+        try:
+            txt = Path(f).read_text(encoding='utf-8', errors='ignore')
+            txt = re.sub(r'--.*', '', txt)
+            prov = set(m.lower() for m in re_provides.findall(txt))
+            req = set(m.lower() for m in re_requires.findall(txt)) - prov
+            provides[f], requires[f] = prov, req
+        except Exception: 
+            provides[f], requires[f] = set(), set()
+            
+    dependencies = {f: set() for f in file_list}
+    for f, reqs in requires.items():
+        for f_dep, provs in provides.items():
+            if f != f_dep and reqs.intersection(provs): 
+                dependencies[f].add(f_dep)
+                
+    sorted_files, visited, temp = [], set(), set()
+    
+    def visit(n):
+        if n in temp or n in visited: return
+        temp.add(n)
+        for d in sorted(dependencies.get(n, set())): 
+            visit(d)
+        temp.remove(n)
+        visited.add(n)
+        sorted_files.append(n)
+        
+    for f in sorted(file_list): 
+        visit(f)
+    return sorted_files
 
-    tb_files = []
+def process_syn(syn_path: Path):
+    syn_path = syn_path.resolve()
+    files = [str(p.resolve()) for p in syn_path.rglob('*.vhd') if p.is_file()]
+    top = find_top_entity(files)
+    files = sort_files_by_dependency(files)
+    local_files = [str(Path(f).relative_to(syn_path)) for f in files]
+    
+    lib_str = os.environ.get("ASIC_LIB", "").strip()
+    tmp_unmapped_blif = "__unmapped_netlist.blif"
+    
+    res = {
+        "syn_dir": str(syn_path),
+        "top": top,
+        "compile": {"ok": True, "message": "Synthesis OK"},
+        "metrics": {"area_um2": float('nan'), "cp_ns": float('nan')}
+    }
 
-    tpl_path = "fusesoc.core.tpl"
-    out_core_path = f"{core_name}.core"
-
-    if not os.path.exists(tpl_path):
-        print(f"[yosys_runner] Error: Template file '{tpl_path}' not found.")
-        sys.exit(1)
-
-    print(f"[yosys_runner] Rendering template {tpl_path} into {out_core_path}...")
-    try:
-        template = Template(filename=tpl_path)
-        rendered_core = template.render(
-            core_name=core_name,
-            entity_name=entity_name,
-            dut_files=dut_files,
-            tb_files=tb_files
-        )
-    except Exception as e:
-        print(f"[yosys_runner] Template rendering failed: {e}")
-        sys.exit(1)
-
-    with open(out_core_path, "w") as f:
-        f.write(rendered_core)
-
-    print("[yosys_runner] Executing FuseSoC for Yosys synthesis...")
-    cmd = [
-        "fusesoc",
-        "--cores-root", ".",
-        "run",
-        "--target=syn",
-        f"vlsi_lab:ms:{core_name}"
+    # Step 1: Yosys logic mapping and area extraction
+    yosys_cmds = [
+        f"ghdl --std=08 -fsynopsys {' '.join(local_files)} -e {top}",
+        f"synth -top {top}",
+        "flatten",
+        "design -save pre_map",
+        "techmap -map +/adff2dff.v",
+        "dffunmap",
+        "opt_clean -purge",
+        f"write_blif {tmp_unmapped_blif}",
+        "design -load pre_map",
+        f"dfflibmap -liberty {lib_str}", 
+        f"abc -liberty {lib_str}", 
+        "opt_clean -purge",
+        f"stat -liberty {lib_str}" 
     ]
 
-    print(f"[yosys_runner] Running command: {' '.join(cmd)}")
-    try:
-        subprocess.run(cmd, check=True)
-        print("[yosys_runner] Yosys synthesis completed successfully.")
-    except subprocess.CalledProcessError as e:
-        print(f"[yosys_runner] FuseSoC execution failed with return code {e.returncode}.")
-        sys.exit(e.returncode)
+    r_yosys = subprocess.run(
+        ["yosys", "-m", "ghdl", "-p", "; ".join(yosys_cmds)], 
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(syn_path)
+    )
+    (syn_path / "yosys_synth.log").write_text(r_yosys.stdout, encoding='utf-8')
+    final_stdout = r_yosys.stdout
 
+    # Step 2: ABC standalone timing extraction
+    abc_cmds = f"read_lib -w {lib_str}; read_blif {tmp_unmapped_blif}; strash; map; topo; stime"
+    r_abc = subprocess.run(
+        ["yosys-abc", "-c", abc_cmds], 
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(syn_path)
+    )
+    (syn_path / "abc_timing.log").write_text(r_abc.stdout, encoding='utf-8')
+    final_stdout += "\n" + r_abc.stdout
+    
+    # Cleanup temp file
+    if (syn_path / tmp_unmapped_blif).exists():
+        (syn_path / tmp_unmapped_blif).unlink()
 
-if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("[yosys_runner] Usage: python yosys_runner.py <entity_name> <file1.vhd> <file2.vhd> ...")
-        sys.exit(1)
+    # Metrics Extraction
+    am = re.search(r"Chip area for module.*?:\s*([0-9.]+)", final_stdout)
+    if am and float(am.group(1)) > 0: 
+        res["metrics"]["area_um2"] = float(am.group(1))
+    
+    abcm = re.search(r"Delay\s*=\s*([0-9.]+)", final_stdout, re.IGNORECASE)
+    if abcm and float(abcm.group(1)) > 0:
+        res["metrics"]["cp_ns"] = round(float(abcm.group(1)) / 1000.0, 3)
 
-    top_entity = sys.argv[1]
-    input_files = sys.argv[2:]
-    run_yosys_flow(top_entity, input_files)
+    return res, 0
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument('syn_dir')
+    args = p.parse_args()
+    
+    res, rc = process_syn(Path(args.syn_dir))
+    print(json.dumps(res, indent=2))
+    sys.exit(rc)
+
+if __name__ == '__main__':
+    main()

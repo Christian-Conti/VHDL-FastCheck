@@ -7,56 +7,30 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Ensure local utils can be imported when script is run directly
+# Runner: GHDL
 sys.path.insert(0, str(Path(__file__).parent))
 try:
     import generate_core
 except Exception:
     generate_core = None
 
-
-def find_top_entity(file_list: list[str]) -> str | None:
-    re_entity = re.compile(r'^\s*entity\s+(\w+)', re.IGNORECASE | re.MULTILINE)
-    re_inst = re.compile(r':\s*(?:entity\s+(?:\w+\.)?)?(\w+)\s+(?:generic\s+map|port\s+map)', re.IGNORECASE)
-
-    defined_entities = {}
-    instantiated_entities = set()
-
-    for f in file_list:
-        try:
-            txt = Path(f).read_text(encoding='utf-8', errors='ignore')
-            txt = re.sub(r'--.*', '', txt)
-
-            for match in re_entity.findall(txt):
-                defined_entities[match.lower()] = match
-
-            for match in re_inst.findall(txt):
-                instantiated_entities.add(match.lower())
-        except Exception:
-            continue
-
-    top_candidates = []
-    for lower_name, original_name in defined_entities.items():
-        if lower_name not in instantiated_entities:
-            top_candidates.append(original_name)
-
-    if not top_candidates:
-        if defined_entities:
-            return list(defined_entities.values())[0]
-        return None
-
-    top_candidates.sort()
-    return top_candidates[0]
+# Log helpers
+TAG = '[ghdl_runner]'
+def info(msg: str) -> None:
+    print(f"{TAG} {msg}", file=sys.stderr)
+def error(msg: str) -> None:
+    print(f"{TAG} [ERROR] {msg}", file=sys.stderr)
 
 
-def sort_files_by_dependency(file_list: list[str]) -> list[str]:
-    re_provides_entity = re.compile(r'^\s*entity\s+(\w+)', re.IGNORECASE | re.MULTILINE)
-    re_provides_package = re.compile(r'^\s*package\s+(?!body\b)(\w+)', re.IGNORECASE | re.MULTILINE)
+def get_dependencies(file_list: list[str]):
+    re_prov_entity = re.compile(r'^\s*entity\s+(\w+)', re.IGNORECASE | re.MULTILINE)
+    re_prov_pkg = re.compile(r'^\s*package\s+(?!body\b)(\w+)', re.IGNORECASE | re.MULTILINE)
 
-    re_requires_pkg_body = re.compile(r'^\s*package\s+body\s+(\w+)', re.IGNORECASE | re.MULTILINE)
-    re_requires_inst = re.compile(r':\s*(?:entity\s+(?:\w+\.)?)?(\w+)\s+(?:generic|port)\s+map', re.IGNORECASE)
-    re_requires_use = re.compile(r'^\s*use\s+(?:\w+\.)?(\w+)', re.IGNORECASE | re.MULTILINE)
-    re_requires_arch = re.compile(r'^\s*architecture\s+\w+\s+of\s+(\w+)', re.IGNORECASE | re.MULTILINE)
+    # Use DOTALL to match newlines between component name and generic/port map
+    re_req_inst = re.compile(r':\s*(?:entity\s+(?:\w+\.)?)?(\w+)\s+(?:generic|port)\s+map', re.IGNORECASE | re.DOTALL)
+    re_req_use = re.compile(r'^\s*use\s+(?:\w+\.)?(\w+)', re.IGNORECASE | re.MULTILINE)
+    re_req_arch = re.compile(r'^\s*architecture\s+\w+\s+of\s+(\w+)', re.IGNORECASE | re.MULTILINE)
+    re_req_pkg_body = re.compile(r'^\s*package\s+body\s+(\w+)', re.IGNORECASE | re.MULTILINE)
 
     provides = {}
     requires = {}
@@ -66,13 +40,13 @@ def sort_files_by_dependency(file_list: list[str]) -> list[str]:
             txt = Path(f).read_text(encoding='utf-8', errors='ignore')
             txt = re.sub(r'--.*', '', txt)
 
-            prov = set(m.lower() for m in re_provides_entity.findall(txt))
-            prov.update(m.lower() for m in re_provides_package.findall(txt))
+            prov = set(m.lower() for m in re_prov_entity.findall(txt))
+            prov.update(m.lower() for m in re_prov_pkg.findall(txt))
 
-            req = set(m.lower() for m in re_requires_pkg_body.findall(txt))
-            req.update(m.lower() for m in re_requires_inst.findall(txt))
-            req.update(m.lower() for m in re_requires_use.findall(txt))
-            req.update(m.lower() for m in re_requires_arch.findall(txt))
+            req = set(m.lower() for m in re_req_inst.findall(txt))
+            req.update(m.lower() for m in re_req_use.findall(txt))
+            req.update(m.lower() for m in re_req_arch.findall(txt))
+            req.update(m.lower() for m in re_req_pkg_body.findall(txt))
             req = req - prov
 
             provides[f] = prov
@@ -87,6 +61,39 @@ def sort_files_by_dependency(file_list: list[str]) -> list[str]:
             if f != f_dep and reqs.intersection(provs):
                 dependencies[f].add(f_dep)
 
+    return provides, dependencies
+
+
+def find_top_entity(file_list: list[str], provides: dict, dependencies: dict) -> str | None:
+    is_dependency_of = set()
+    for deps in dependencies.values():
+        is_dependency_of.update(deps)
+
+    potential_top_files = set(file_list) - is_dependency_of
+
+    if not potential_top_files:
+        if file_list:
+            return None
+        return None
+
+    # Sort candidates, giving priority to files containing 'tb' to guarantee deterministic results
+    sorted_tops = sorted(list(potential_top_files), key=lambda x: (0 if 'tb' in Path(x).name.lower() else 1, x.lower()))
+    top_file = sorted_tops[0]
+
+    entities_in_top = sorted(list(provides[top_file]))
+    if entities_in_top:
+        txt = Path(top_file).read_text(encoding='utf-8', errors='ignore')
+        # Try to extract the original case formatting of the entity
+        for ent in entities_in_top:
+            match = re.search(rf'entity\s+({ent})', txt, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return entities_in_top[0]
+
+    return None
+
+
+def sort_files_by_dependency(file_list: list[str], dependencies: dict) -> list[str]:
     sorted_files = []
     visited = set()
     temp_mark = set()
@@ -107,20 +114,6 @@ def sort_files_by_dependency(file_list: list[str]) -> list[str]:
             visit(f)
 
     return sorted_files
-
-
-def run_ghdl_analyze(files: list[str]):
-    logs = []
-    for f in files:
-        cmd = ["ghdl", "-a", "--std=08", "-fsynopsys", f]
-        try:
-            r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        except FileNotFoundError:
-            return False, "ghdl not found in PATH", '\n'.join(logs)
-        logs.append(f"$ {' '.join(cmd)}\n{r.stdout}")
-        if r.returncode != 0:
-            return False, f"analysis failed for {f}", '\n'.join(logs)
-    return True, "analysis OK", '\n'.join(logs)
 
 
 def run_ghdl_elaborate(top: str):
@@ -155,8 +148,9 @@ def process_sim(sim_path: Path, progress_callback=None):
             progress_callback(100, "no .vhd files found")
         return result, 0
 
-    top = find_top_entity(files)
-    files = sort_files_by_dependency(files)
+    provides, dependencies = get_dependencies(files)
+    top = find_top_entity(files, provides, dependencies)
+    files = sort_files_by_dependency(files, dependencies)
 
     rel_paths = [Path(f).relative_to(sim_path) for f in files]
     basenames = []
@@ -167,7 +161,6 @@ def process_sim(sim_path: Path, progress_callback=None):
 
     result = {"sim_dir": str(sim_path), "files": basenames, "top": top, "compile": {}}
 
-    logs = []
     total = len(files)
     local_files = [str(Path(f).relative_to(sim_path)) for f in files]
 
@@ -178,30 +171,25 @@ def process_sim(sim_path: Path, progress_callback=None):
             pct = int((i - 1) / total * 100)
             progress_callback(pct, f"Analyzing {Path(local_f).name} ({i}/{total})")
 
-        # Added -fsynopsys to support legacy std_logic_arith/std_logic_unsigned libraries
         cmd = ["ghdl", "-a", "--std=08", "-fsynopsys", local_f]
         try:
             r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(sim_path), env=env)
         except FileNotFoundError:
             result["compile"]["ok"] = False
             result["compile"]["error"] = "ghdl not found in PATH"
-            result["compile"]["log"] = '\n'.join(logs)
             if progress_callback:
                 progress_callback(100, "ghdl not found in PATH")
             return result, 1
 
-        logs.append(f"$ {' '.join(cmd)}\n{r.stdout}")
         if r.returncode != 0:
             result["compile"]["ok"] = False
             result["compile"]["message"] = f"analysis failed for {str(sim_path / local_f)}"
-            result["compile"]["log"] = '\n'.join(logs)
             if progress_callback:
                 progress_callback(100, f"analysis failed for {Path(local_f).name}")
             return result, 1
 
     result["compile"]["ok"] = True
     result["compile"]["message"] = "analysis OK"
-    result["compile"]["log"] = '\n'.join(logs)
 
     if progress_callback:
         progress_callback(100, "done")

@@ -6,15 +6,16 @@ import sys
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Runner: test harness
 # ANSI color codes for terminal output
 GREEN = '\033[92m'
 RED = '\033[91m'
 RESET = '\033[0m'
 
-# Log prefix
+# Log helpers
 TAG = '[run_tests]'
 def info(msg: str) -> None:
-    print(f"{TAG} {msg}")
+    print(f"{TAG} {msg}", file=sys.stderr)
 def error(msg: str) -> None:
     print(f"{TAG} [ERROR] {msg}", file=sys.stderr)
 

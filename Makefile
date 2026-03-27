@@ -14,6 +14,10 @@ MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 ## @param TARGET Path to the exercise directory
 TARGET ?=
 
+## @config ASIC standard cell library
+## @param LIB Path to the .lib file for synthesis
+LIB ?= 
+
 # ── Targets ─────────────────────────────────────────────────────────────────────
 .PHONY: help env test
 
@@ -32,10 +36,11 @@ help:
 ## Download miniconda (if needed) and create the conda environment with FuseSoC
 ## After the environment is created, install pNVC
 env:
-	@bash "$(MAKEFILE_DIR)/utils/MakeConda"
 	@bash "$(MAKEFILE_DIR)/utils/MakeYosys"
 
 ## Execute the test flow: scan TARGET for "sim" dirs and run Python runner
 ## @param TARGET Path to the exercise directory
+## @param LIB Path to the .lib file
 test:
-	@python3 "$(MAKEFILE_DIR)/src/run_tests.py" "$(TARGET)"
+	@ASIC_LIB="$(LIB)" python3 "$(MAKEFILE_DIR)/src/run_tests.py" "$(TARGET)"
+	echo $(MAKEFILE_DIR)
