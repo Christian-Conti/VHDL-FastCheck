@@ -5,7 +5,7 @@ def q(p):
     return p.replace('\\', '/')
 %>
 name: vlsi_lab:ms:${core_name}
-description: Generated FuseSoC core for simulation
+description: Generated FuseSoC core for simulation and synthesis
 
 filesets:
   rtl:
@@ -29,3 +29,10 @@ targets:
       modelsim:
         vlog_options: [-quiet, -timescale=1ns/1ps]
         vsim_options: [-voptargs="+acc"]
+
+  syn:
+    default_tool: yosys
+    filesets: [rtl]
+    toplevel: ${entity_name}
+    tools:
+      yosys:

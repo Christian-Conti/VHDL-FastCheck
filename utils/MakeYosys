@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Check for curl
+command -v curl >/dev/null 2>&1 || { echo "[MakeYosys] curl not found." >&2; exit 1; }
+
+# Get the latest release from the API
+LATEST_URL=$(curl -s https://api.github.com/repos/YosysHQ/oss-cad-suite-build/releases | grep "browser_download_url" | grep "linux-x64" | grep "\.tgz" | head -n 1 | cut -d '"' -f 4)
+
+if [ -z "$LATEST_URL" ]; then
+  echo "[MakeYosys] Error: Could not retrieve the download URL." >&2
+  exit 1
+fi
+
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+curl -fSL "$LATEST_URL" -o "$TMPDIR/oss-cad-suite.tgz"
+
+DEST_ROOT="$HOME/.local"
+INSTALL_DIR="$DEST_ROOT/oss-cad-suite"
+
+if [ -d "$INSTALL_DIR" ]; then
+  rm -rf "$INSTALL_DIR"
+fi
+
+mkdir -p "$DEST_ROOT"
+tar -xzf "$TMPDIR/oss-cad-suite.tgz" -C "$DEST_ROOT"
+
+BIN_DIR="$INSTALL_DIR/bin"
+EXPORT_LINE="export PATH=\"$BIN_DIR:\$PATH\""
+USER_SHELL=$(basename "${SHELL:-bash}")
+
+case "$USER_SHELL" in
+  bash) RC_FILE="$HOME/.bashrc" ;;
+  zsh)  RC_FILE="$HOME/.zshrc" ;;
+  *)    RC_FILE="$HOME/.profile" ;;
+esac
+
+# Update PATH in the rc file for future sessions
+if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
+  if ! grep -F -q "$EXPORT_LINE" "$RC_FILE" 2>/dev/null; then
+    printf '\n# Added by ms-lab-checker MakeYosys\n%s\n' "$EXPORT_LINE" >> "$RC_FILE"
+    echo "[MakeYosys] Added $BIN_DIR to $RC_FILE"
+  fi
+fi
+
+export PATH="$BIN_DIR:$PATH"
+
+if [ -f "$RC_FILE" ]; then
+  set +u
+  # shellcheck disable=SC1090
+  . "$RC_FILE" || true
+  set -u
+  echo "[MakeYosys] Environment updated for this session..."
+fi
+
+echo "[MakeYosys] Installation complete... \nUsing: $(command -v yosys || echo 'yosys not found in current PATH')"
+
+exit 0

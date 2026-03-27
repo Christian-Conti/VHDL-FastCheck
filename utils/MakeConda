@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Installer: Miniconda + conda env 'ms'
 on_exit() {
   local rc=$?
   if [ $rc -ne 0 ]; then
@@ -20,9 +21,7 @@ warn() { :; }
 err() { echo "[ERROR] $*" >&2; }
 
 download_file() {
-  local url="$1"
-  local out="$2"
-
+  local url="$1" out="$2"
   if command -v wget >/dev/null 2>&1; then
     wget -q "$url" -O "$out"
   elif command -v curl >/dev/null 2>&1; then
@@ -37,8 +36,7 @@ glibc_version() {
   local ver
   ver="$(ldd --version 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+$')"
   local major minor
-  major="${ver%%.*}"
-  minor="${ver##*.}"
+  major="${ver%%.*}"; minor="${ver##*.}"
   echo $(( major * 1000 + minor ))
 }
 
@@ -49,34 +47,19 @@ ensure_conda() {
   fi
 
   if [[ ! -x "${MINICONDA_DIR}/bin/conda" ]]; then
-    local installer="/tmp/miniconda_installer.sh"
-    local arch
+    local installer="/tmp/miniconda_installer.sh" arch glibc_ver suffix url
     arch="$(uname -m)"
-
-    local glibc_ver
     glibc_ver="$(glibc_version)"
-    local suffix
-    if (( glibc_ver >= 2028 )); then
-      suffix="latest"
-    else
-      info "GLIBC < 2.28 detected ($(ldd --version 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+$')), using Miniconda3 py39_4.12.0 (last GLIBC-2.17-compatible release)."
-      suffix="py39_4.12.0"
-    fi
-
-    local url=""
+    if (( glibc_ver >= 2028 )); then suffix="latest"; else suffix="py39_4.12.0"; fi
     case "$arch" in
       x86_64)  url="https://repo.anaconda.com/miniconda/Miniconda3-${suffix}-Linux-x86_64.sh" ;;
       aarch64) url="https://repo.anaconda.com/miniconda/Miniconda3-${suffix}-Linux-aarch64.sh" ;;
-      *)
-        err "Unsupported architecture: $arch"
-        return 1
-        ;;
+      *) err "Unsupported architecture: $arch"; return 1 ;;
     esac
 
     download_file "$url" "$installer"
     bash "$installer" -b -p "$MINICONDA_DIR"
     rm -f "$installer"
-    info "Miniconda installed to $MINICONDA_DIR..."
   fi
 
   export PATH="${MINICONDA_DIR}/bin:${PATH}"
@@ -86,16 +69,12 @@ ensure_conda() {
 configure_conda_channels() {
   local channels
   channels="$(conda config --show channels 2>/dev/null || true)"
-
   if grep -qF -- "- defaults" <<<"$channels"; then
     conda config --remove channels defaults || true
-    info "Removed 'defaults' channel to avoid non-interactive ToS prompts."
   fi
-
   if ! grep -qF -- "- conda-forge" <<<"$channels"; then
     conda config --add channels conda-forge
   fi
-
   conda config --set channel_priority strict
 }
 
@@ -109,82 +88,53 @@ accept_conda_tos_if_supported() {
 init_conda_shell() {
   local user_shell rc_file
   user_shell="$(basename "${SHELL:-bash}")"
-
   case "${user_shell}" in
     bash) rc_file="${HOME}/.bashrc" ;;
     zsh)  rc_file="${HOME}/.zshrc" ;;
     fish) rc_file="${HOME}/.config/fish/config.fish" ;;
     *)    rc_file="${HOME}/.${user_shell}rc" ;;
   esac
-
   if conda init "${user_shell}" >/dev/null 2>&1; then
-    info "Conda initialized for ${user_shell}."
     if [ -f "${rc_file}" ]; then
-      # shellcheck disable=SC1090
-      if ( source "${rc_file}" >/dev/null 2>&1 ); then
-        info "Sourced ${rc_file} into current shell."
-      else
-        warn "Failed to source ${rc_file}. You may need to run: source ${rc_file}"
-      fi
-    else
-      warn "${rc_file} not found. You can run: conda init ${user_shell} && source ${rc_file}"
+      if ( source "${rc_file}" >/dev/null 2>&1 ); then :; fi
     fi
-  else
-    warn "Could not run 'conda init ${user_shell}'. You may need to add conda to your shell manually."
   fi
 }
 
 install_requirements_in_env() {
   if command -v conda >/dev/null 2>&1 && conda run -n "${ENV_NAME}" true >/dev/null 2>&1; then
-    info "Installing requirements into '${ENV_NAME}' using 'conda run'..."
     conda run -n "${ENV_NAME}" python -m pip install --upgrade pip
     conda run -n "${ENV_NAME}" python -m pip install -r "$REQUIREMENTS_FILE"
     return $?
   fi
-
   if conda activate "${ENV_NAME}" >/dev/null 2>&1; then
-    info "Installing requirements into '${ENV_NAME}' via activation..."
     python -m pip install --upgrade pip
     python -m pip install -r "$REQUIREMENTS_FILE"
     return $?
   fi
-
-  warn "Could not run commands inside environment '${ENV_NAME}'."
   return 1
 }
 
 ensure_env() {
   configure_conda_channels
   accept_conda_tos_if_supported
-
   if conda env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
-    info "Environment '${ENV_NAME}' exists — updating requirements."
     if ! install_requirements_in_env; then
-      warn "Updating requirements failed; attempting to recreate environment."
       conda env remove -y -n "${ENV_NAME}" || true
       conda create -y -n "${ENV_NAME}" --override-channels -c conda-forge python=3.11
       if conda run -n "${ENV_NAME}" python -m pip install --upgrade pip >/dev/null 2>&1; then
         conda run -n "${ENV_NAME}" python -m pip install -r "$REQUIREMENTS_FILE"
-      else
-        warn "Failed to install requirements after recreating environment."
       fi
     fi
   else
-    info "Creating environment '${ENV_NAME}'..."
     conda create -y -n "${ENV_NAME}" --override-channels -c conda-forge python=3.11
-    if ! install_requirements_in_env; then
-      warn "Failed to install requirements into new environment."
-    fi
+    if ! install_requirements_in_env; then :; fi
   fi
 }
 
 install_nvc_build_deps() {
   local deps="gcc gxx make llvmdev flex pkg-config libffi zlib zstd"
-  echo "[INFO] Installing NVC build dependencies into '${ENV_NAME}'..."
-  conda install -y -n "${ENV_NAME}" --override-channels -c conda-forge $deps || {
-    warn "Failed to install one or more NVC build dependencies."
-    return 1
-  }
+  conda install -y -n "${ENV_NAME}" --override-channels -c conda-forge $deps || return 1
 }
 
 main() {
@@ -193,10 +143,7 @@ main() {
   accept_conda_tos_if_supported
   ensure_env
   install_nvc_build_deps
-
-  echo "[INFO] installation complete succesfull"
-  echo "[INFO] Environment '${ENV_NAME}' is ready..."
-  echo "[INFO] Activate with: conda activate ${ENV_NAME}"
+  echo "[MakeConda] Environment '${ENV_NAME}' is ready. Activate with: conda activate ${ENV_NAME}"
 }
 
 main "$@"

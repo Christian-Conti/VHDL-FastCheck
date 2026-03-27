@@ -33,9 +33,9 @@ help:
 ## After the environment is created, install pNVC
 env:
 	@bash "$(MAKEFILE_DIR)/utils/MakeConda"
-	@bash "$(MAKEFILE_DIR)/utils/MakeNVC"
+	@bash "$(MAKEFILE_DIR)/utils/MakeYosys"
 
 ## Execute the test flow: scan TARGET for "sim" dirs and run Python runner
 ## @param TARGET Path to the exercise directory
 test:
-	@python3 "$(MAKEFILE_DIR)/utils/run_tests.py" "$(TARGET)"
+	@python3 "$(MAKEFILE_DIR)/src/run_tests.py" "$(TARGET)"
