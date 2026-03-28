@@ -36,13 +36,41 @@ def extract_archives(input_dir, temp_dir):
 
 def run_make_test(dirs):
     """Run 'make test' in each directory in parallel using multiprocessing"""
-    def worker(directory, queue):
+    def worker(directory, queue, repo_root, lib_path):
         try:
-            # Call make test TARGET=<directory>
-            subprocess.run(["make", "test", f"TARGET={directory}"], cwd=directory, check=True)
+            # Call make test TARGET=<directory> LIB=<lib_path> from repo root
+            subprocess.run([
+                "make", "test", f"TARGET={directory}", f"LIB={lib_path}"
+            ], cwd=repo_root, check=True)
             queue.put((directory, True, None))
         except subprocess.CalledProcessError as e:
             queue.put((directory, False, str(e)))
+
+    processes = []
+    queue = Queue()
+    n = len(dirs)
+    bar = tqdm(total=n, desc="Testing", unit="dir") if tqdm else None
+    repo_root = str(Path(__file__).parent.resolve())
+    lib_path = os.environ.get("LIB_PATH_OVERRIDE", "")
+    for d in dirs:
+        p = Process(target=worker, args=(d, queue, repo_root, lib_path))
+        p.start()
+        processes.append(p)
+    completed = 0
+    errors = []
+    while completed < n:
+        directory, success, error = queue.get()
+        completed += 1
+        if bar:
+            bar.update(1)
+        if not success:
+            errors.append((directory, error))
+    for p in processes:
+        p.join()
+    if bar:
+        bar.close()
+    for directory, error in errors:
+        print(f"Error running make test in {directory}: {error}")
 
     processes = []
     queue = Queue()
@@ -95,6 +123,7 @@ def compact_json_to_jsonl(json_files, output_jsonl):
 def main():
     parser = argparse.ArgumentParser(description="Extract archives, run make test in each, and collect JSON results.")
     parser.add_argument("input_dir", help="Directory containing compressed archives")
+    parser.add_argument("--lib", dest="lib_path", default=None, help="Path to the .lib file for synthesis (optional)")
     args = parser.parse_args()
     input_dir = args.input_dir
     if not os.path.isdir(input_dir):
@@ -102,6 +131,11 @@ def main():
         sys.exit(1)
 
     repo_root = Path(__file__).parent.resolve()
+    lib_path = args.lib_path
+    if not lib_path:
+        # Use default from Makefile if not provided
+        lib_path = str(repo_root / "../../../repository/do/libnandgate/NangateOpenCellLibrary_typical_ecsm.lib")
+    os.environ["LIB_PATH_OVERRIDE"] = lib_path
     with tempfile.TemporaryDirectory() as temp_dir:
         extracted_dirs = extract_archives(input_dir, temp_dir)
         if tqdm and not extracted_dirs:
