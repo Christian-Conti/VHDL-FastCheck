@@ -166,6 +166,7 @@ def process_sim(sim_path: Path, progress_callback=None):
 
     env = os.environ.copy()
 
+
     for i, local_f in enumerate(local_files, start=1):
         if progress_callback:
             pct = int((i - 1) / total * 100)
@@ -177,6 +178,7 @@ def process_sim(sim_path: Path, progress_callback=None):
         except FileNotFoundError:
             result["compile"]["ok"] = False
             result["compile"]["error"] = "ghdl not found in PATH"
+            result["compile"]["log"] = "ghdl not found in PATH"
             if progress_callback:
                 progress_callback(100, "ghdl not found in PATH")
             return result, 1
@@ -184,6 +186,7 @@ def process_sim(sim_path: Path, progress_callback=None):
         if r.returncode != 0:
             result["compile"]["ok"] = False
             result["compile"]["message"] = f"analysis failed for {str(sim_path / local_f)}"
+            result["compile"]["log"] = r.stdout
             if progress_callback:
                 progress_callback(100, f"analysis failed for {Path(local_f).name}")
             return result, 1
