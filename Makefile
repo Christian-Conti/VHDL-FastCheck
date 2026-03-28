@@ -16,7 +16,7 @@ TARGET ?=
 
 ## @config ASIC standard cell library
 ## @param LIB Path to the .lib file for synthesis
-LIB ?= 
+LIB ?= $(abspath $(MAKEFILE_DIR)/../../../repository/do/libnandgate/NangateOpenCellLibrary_typical_ecsm.lib)
 
 # ── Targets ─────────────────────────────────────────────────────────────────────
 .PHONY: help env test

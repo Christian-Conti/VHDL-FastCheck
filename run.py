@@ -36,14 +36,18 @@ def extract_archives(input_dir, temp_dir):
 
 def run_make_test(dirs):
     """Run 'make test' in each directory in parallel using multiprocessing"""
-    def worker(directory, queue, repo_root, lib_path):
+    def worker(directory, queue, repo_root, lib_path, log_path):
         try:
-            # Call make test TARGET=<directory> LIB=<lib_path> from repo root
-            subprocess.run([
-                "make", "test", f"TARGET={directory}", f"LIB={lib_path}"
-            ], cwd=repo_root, check=True)
+            # Redirect all output to the log file
+            with open(log_path, "a") as logf:
+                result = subprocess.run([
+                    "make", "test", f"TARGET={directory}", f"LIB={lib_path}"
+                ], cwd=repo_root, stdout=logf, stderr=logf, check=True)
             queue.put((directory, True, None))
         except subprocess.CalledProcessError as e:
+            # Log the error as well
+            with open(log_path, "a") as logf:
+                logf.write(f"[ERROR] make test failed for {directory}: {e}\n")
             queue.put((directory, False, str(e)))
 
     processes = []
@@ -52,8 +56,12 @@ def run_make_test(dirs):
     bar = tqdm(total=n, desc="Testing", unit="dir") if tqdm else None
     repo_root = str(Path(__file__).parent.resolve())
     lib_path = os.environ.get("LIB_PATH_OVERRIDE", "")
+    log_path = os.path.join(repo_root, "run.log")
+    # Clear the log file at the start
+    with open(log_path, "w") as logf:
+        logf.write("")
     for d in dirs:
-        p = Process(target=worker, args=(d, queue, repo_root, lib_path))
+        p = Process(target=worker, args=(d, queue, repo_root, lib_path, log_path))
         p.start()
         processes.append(p)
     completed = 0
@@ -69,28 +77,9 @@ def run_make_test(dirs):
         p.join()
     if bar:
         bar.close()
-    for directory, error in errors:
-        print(f"Error running make test in {directory}: {error}")
+    # Do not print errors to stdout; all output is in run.log
 
-    processes = []
-    queue = Queue()
-    n = len(dirs)
-    bar = tqdm(total=n, desc="Testing", unit="dir") if tqdm else None
-    for d in dirs:
-        p = Process(target=worker, args=(d, queue))
-        p.start()
-        processes.append(p)
-    completed = 0
-    errors = []
-    while completed < n:
-        directory, success, error = queue.get()
-        completed += 1
-        if bar:
-            bar.update(1)
-        if not success:
-            errors.append((directory, error))
-    for p in processes:
-        p.join()
+    # (Removed duplicate/incorrect block)
     if bar:
         bar.close()
     for directory, error in errors:
