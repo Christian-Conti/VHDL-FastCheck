@@ -19,6 +19,4 @@ conda-meta/
 .DS_Store
 Thumbs.db
 ehthumbs.db
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+results*
