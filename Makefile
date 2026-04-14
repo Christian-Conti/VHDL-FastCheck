@@ -36,6 +36,7 @@ help:
 ## Download miniconda (if needed) and create the conda environment with FuseSoC
 ## After the environment is created, install pNVC
 env:
+	@bash "$(MAKEFILE_DIR)/utils/MakeConda"
 	@bash "$(MAKEFILE_DIR)/utils/MakeYosys"
 
 ## Execute the test flow: scan TARGET for "sim" dirs and run Python runner
